@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "atlassian": {
+    "mcp-atlassian": {
       "command": "uvx",
       "args": ["--from", "${CLAUDE_PLUGIN_ROOT}", "mcp-atlassian"],
       "env": {

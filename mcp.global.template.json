@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "atlassian": {
+    "mcp-atlassian": {
       "env": {
         "JIRA_URL": "https://your-domain.atlassian.net",
         "JIRA_USERNAME": "you@example.com",
