@@ -2,7 +2,7 @@
   "mcpServers": {
     "mcp-atlassian": {
       "command": "uvx",
-      "args": ["--reinstall", "--from", "${CLAUDE_PLUGIN_ROOT}", "mcp-atlassian"]
+      "args": ["--from", "${CLAUDE_PLUGIN_ROOT}", "mcp-atlassian"]
     }
   }
 }
