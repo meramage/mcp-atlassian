@@ -150,6 +150,10 @@ ignore_missing_imports = true
 module = "src.mcp_atlassian.*"
 disallow_untyped_defs = false
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_atlassian"]
+ignore-vcs = true
+
 [tool.hatch.version]
 source = "uv-dynamic-versioning"
 

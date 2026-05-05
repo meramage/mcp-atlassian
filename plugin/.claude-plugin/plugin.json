@@ -1,0 +1,19 @@
+{
+  "name": "mcp-atlassian",
+  "version": "0.1.0",
+  "description": "Atlassian MCP server for Claude Code — 27 curated Jira and Confluence tools (issues, search, transitions, comments, pages). Expand via TOOLSETS env var.",
+  "author": {
+    "name": "meramage",
+    "url": "https://github.com/meramage"
+  },
+  "homepage": "https://github.com/meramage/mcp-atlassian",
+  "repository": "https://github.com/meramage/mcp-atlassian",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "atlassian",
+    "jira",
+    "confluence",
+    "claude-code"
+  ]
+}

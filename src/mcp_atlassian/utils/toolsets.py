@@ -155,18 +155,17 @@ def get_enabled_toolsets() -> set[str]:
     Supports keywords 'all' (all 21 toolsets) and 'default' (6 defaults),
     plus comma-separated specific toolset names. Case-insensitive for keywords.
 
-    When TOOLSETS is unset or empty, returns all toolsets with a deprecation
-    warning. In v0.22.0 the default will change to DEFAULT_TOOLSETS (6 core).
-    Set ``TOOLSETS=all`` explicitly to preserve current behavior.
+    When TOOLSETS is unset or empty, returns the 6 default toolsets (27 tools).
+    Set ``TOOLSETS=all`` explicitly to enable all toolsets.
 
     Returns:
-        A set of valid toolset names. Defaults to all toolsets when unset.
+        A set of valid toolset names. Defaults to DEFAULT_TOOLSETS when unset.
         Unknown names are silently dropped with a warning. If only unknown
         names are given, returns an empty set (fail-closed).
 
     Examples:
-        TOOLSETS unset -> all 21 toolsets (with deprecation warning)
-        TOOLSETS="" -> all 21 toolsets (with deprecation warning)
+        TOOLSETS unset -> 6 default toolsets (27 tools)
+        TOOLSETS="" -> 6 default toolsets (27 tools)
         TOOLSETS="all" -> all 21 names
         TOOLSETS="default" -> 6 default names
         TOOLSETS="default,jira_agile" -> defaults + jira_agile
@@ -174,26 +173,16 @@ def get_enabled_toolsets() -> set[str]:
     """
     toolsets_str = os.getenv("TOOLSETS")
     if not toolsets_str:
-        logger.info("TOOLSETS not set — all toolsets enabled.")
-        logger.warning(
-            "TOOLSETS is not set — currently defaults to all toolsets. "
-            "In v0.22.0, the default will change to 6 core toolsets only. "
-            "Set TOOLSETS=all explicitly to preserve current behavior."
-        )
-        return set(ALL_TOOLSETS.keys())
+        logger.info("TOOLSETS not set — using 6 default toolsets (27 tools).")
+        return DEFAULT_TOOLSETS
 
     # Split by comma and strip whitespace, filter empty tokens
     tokens = [t.strip() for t in toolsets_str.split(",")]
     tokens = [t for t in tokens if t]
 
     if not tokens:
-        logger.info("TOOLSETS empty — all toolsets enabled.")
-        logger.warning(
-            "TOOLSETS is not set — currently defaults to all toolsets. "
-            "In v0.22.0, the default will change to 6 core toolsets only. "
-            "Set TOOLSETS=all explicitly to preserve current behavior."
-        )
-        return set(ALL_TOOLSETS.keys())
+        logger.info("TOOLSETS empty — using 6 default toolsets (27 tools).")
+        return DEFAULT_TOOLSETS
 
     result: set[str] = set()
 

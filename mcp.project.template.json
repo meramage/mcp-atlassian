@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "atlassian": {
+      "env": {
+        "JIRA_PROJECTS_FILTER": "PROJ1,PROJ2",
+        "CONFLUENCE_SPACES_FILTER": "SPACE1,SPACE2"
+      }
+    }
+  }
+}

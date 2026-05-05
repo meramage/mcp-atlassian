@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "atlassian": {
+      "env": {
+        "JIRA_URL": "https://your-domain.atlassian.net",
+        "JIRA_USERNAME": "you@example.com",
+        "JIRA_API_TOKEN": "your-token",
+        "CONFLUENCE_URL": "https://your-domain.atlassian.net/wiki",
+        "CONFLUENCE_USERNAME": "you@example.com",
+        "CONFLUENCE_API_TOKEN": "your-token"
+      }
+    }
+  }
+}
