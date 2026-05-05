@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 from dotenv import dotenv_values, load_dotenv
 
@@ -302,6 +303,8 @@ def main(
             and ctx.get_parameter_source(param_name)
             != click.core.ParameterSource.DEFAULT
         )
+
+    load_dotenv(Path.home() / ".claude" / "mcp-atlassian.env", override=True)
 
     if env_file:
         logger.debug(f"Loading environment from file: {env_file}")

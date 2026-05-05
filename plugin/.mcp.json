@@ -2,15 +2,7 @@
   "mcpServers": {
     "mcp-atlassian": {
       "command": "uvx",
-      "args": ["--from", "${CLAUDE_PLUGIN_ROOT}", "mcp-atlassian"],
-      "env": {
-        "JIRA_URL": "",
-        "JIRA_USERNAME": "",
-        "JIRA_API_TOKEN": "",
-        "CONFLUENCE_URL": "",
-        "CONFLUENCE_USERNAME": "",
-        "CONFLUENCE_API_TOKEN": ""
-      }
+      "args": ["--reinstall", "--from", "${CLAUDE_PLUGIN_ROOT}", "mcp-atlassian"]
     }
   }
 }
