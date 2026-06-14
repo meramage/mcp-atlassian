@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json,os,glob; root=os.environ['CLAUDE_PLUGIN_ROOT']; files=sorted(glob.glob(root+'/rules/*.md')); parts=[open(f).read() for f in files]; ctx='\\n\\n'.join(parts); print(json.dumps({'hookSpecificOutput':{'hookEventName':'SessionStart','additionalContext':ctx}}))\""
+          }
+        ]
+      }
+    ]
+  }
+}
