@@ -27,7 +27,7 @@ class ToolsetDefinition:
 JIRA_TOOLSETS: dict[str, ToolsetDefinition] = {
     "jira_issues": ToolsetDefinition(
         name="jira_issues",
-        description="Core issue operations: CRUD, search, batch, changelogs",
+        description="Core issue operations: CRUD, search, batch, changelogs, attachments",
         default=True,
     ),
     "jira_fields": ToolsetDefinition(
