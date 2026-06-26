@@ -1051,24 +1051,45 @@ async def jira_get_issue_attachments(
             pattern=ISSUE_KEY_PATTERN,
         ),
     ],
+    max_results: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of attachments to serialize (1-100). The issue "
+                "may hold more; only the first ``max_results`` are returned. The "
+                "``total`` field always reflects the true attachment count."
+            ),
+            default=50,
+            ge=1,
+            le=100,
+        ),
+    ] = 50,
 ) -> str:
-    """List all file attachments on a Jira issue.
+    """List file attachments on a Jira issue.
 
-    Returns metadata for every attachment: id, filename, size, mimeType,
+    Returns metadata for each attachment: id, filename, size, mimeType,
     author display name, created timestamp, and the direct content URL.
+
+    The returned ``attachments`` list is capped at ``max_results`` entries
+    (default 50). The ``total`` field always reports the full attachment
+    count on the issue, while ``returned`` reports how many were serialized.
 
     Args:
         ctx: The FastMCP context.
         issue_key: Jira issue key identifying the issue.
+        max_results: Maximum number of attachments to serialize (1-100).
 
     Returns:
-        JSON string with an ``attachments`` list and a ``total`` count.
+        JSON string with an ``attachments`` list, a ``total`` count, and a
+        ``returned`` count.
     """
     jira = await get_jira_fetcher(ctx)
     attachments = jira.get_issue_attachments(issue_key)
+    capped = attachments[:max_results]
     result: dict[str, Any] = {
         "issue_key": issue_key,
         "total": len(attachments),
+        "returned": len(capped),
         "attachments": [
             {
                 "id": att.id,
@@ -1079,7 +1100,7 @@ async def jira_get_issue_attachments(
                 "created": att.created,
                 "content": att.url,
             }
-            for att in attachments
+            for att in capped
         ],
     }
     return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1116,7 +1137,9 @@ async def jira_download_attachment(
         ``content``.
 
     Raises:
-        ValueError: If the attachment is not found or the ID is invalid.
+        ValueError: If the attachment is not found, the ID is invalid, the
+            attachment has no download URL, the download fails, or the
+            attachment exceeds the 50 MB inline size limit.
     """
     jira = await get_jira_fetcher(ctx)
 
@@ -1124,6 +1147,12 @@ async def jira_download_attachment(
 
     if not attachment.url:
         raise ValueError(f"Attachment {attachment_id} has no download URL.")
+
+    if attachment.size > ATTACHMENT_MAX_BYTES:
+        raise ValueError(
+            f"Attachment {attachment_id} is {attachment.size} bytes which "
+            "exceeds the 50 MB inline limit. Retrieve it directly from Jira."
+        )
 
     data = jira.fetch_attachment_content(attachment.url)
     if data is None:
