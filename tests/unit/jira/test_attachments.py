@@ -1316,3 +1316,87 @@ class TestAttachmentsMixin:
         assert result[1].filename == "report.pdf"
         # No download calls should have been made
         attachments_mixin.jira._session.get.assert_not_called()
+
+
+class TestGetAttachmentById:
+    """Tests for AttachmentsMixin.get_attachment_by_id."""
+
+    @pytest.fixture
+    def attachments_mixin(self, jira_fetcher: JiraFetcher) -> AttachmentsMixin:
+        """Set up test fixtures."""
+        mixin = jira_fetcher
+        mixin.jira = MagicMock()
+        mixin.jira._session = MagicMock()
+        return mixin
+
+    def test_get_attachment_by_id_success(self, attachments_mixin: AttachmentsMixin):
+        """Returns a JiraAttachment when the API responds with valid data."""
+        from mcp_atlassian.models.jira import JiraAttachment
+
+        attachments_mixin.jira.get_attachment.return_value = {
+            "id": "10042",
+            "filename": "screenshot.png",
+            "size": 4096,
+            "mimeType": "image/png",
+            "content": "https://jira.example.com/secure/attachment/10042/screenshot.png",
+            "created": "2024-01-15T10:00:00.000+0000",
+            "author": {"displayName": "Alice"},
+        }
+
+        result = attachments_mixin.get_attachment_by_id("10042")
+
+        assert isinstance(result, JiraAttachment)
+        assert result.id == "10042"
+        assert result.filename == "screenshot.png"
+        assert result.size == 4096
+        assert result.content_type == "image/png"
+        assert (
+            result.url
+            == "https://jira.example.com/secure/attachment/10042/screenshot.png"
+        )
+        attachments_mixin.jira.get_attachment.assert_called_once_with("10042")
+
+    def test_get_attachment_by_id_not_found(self, attachments_mixin: AttachmentsMixin):
+        """Raises ValueError with a descriptive message on 404."""
+        from unittest.mock import MagicMock
+
+        from requests.exceptions import HTTPError
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        attachments_mixin.jira.get_attachment.side_effect = HTTPError(
+            response=mock_response
+        )
+
+        with pytest.raises(ValueError, match="Attachment 99999 not found"):
+            attachments_mixin.get_attachment_by_id("99999")
+
+    def test_get_attachment_by_id_empty_id(self, attachments_mixin: AttachmentsMixin):
+        """Raises ValueError immediately when attachment_id is empty."""
+        with pytest.raises(ValueError, match="attachment_id must not be empty"):
+            attachments_mixin.get_attachment_by_id("")
+
+    def test_get_attachment_by_id_http_error_non_404(
+        self, attachments_mixin: AttachmentsMixin
+    ):
+        """Re-raises non-404 HTTP errors unchanged."""
+        from unittest.mock import MagicMock
+
+        from requests.exceptions import HTTPError
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        http_err = HTTPError(response=mock_response)
+        attachments_mixin.jira.get_attachment.side_effect = http_err
+
+        with pytest.raises(HTTPError):
+            attachments_mixin.get_attachment_by_id("10042")
+
+    def test_get_attachment_by_id_unexpected_response_type(
+        self, attachments_mixin: AttachmentsMixin
+    ):
+        """Raises TypeError when the API returns a non-dict."""
+        attachments_mixin.jira.get_attachment.return_value = "unexpected"
+
+        with pytest.raises(TypeError, match="Unexpected response type"):
+            attachments_mixin.get_attachment_by_id("10042")

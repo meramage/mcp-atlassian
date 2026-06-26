@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import mimetypes
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
@@ -1035,6 +1036,121 @@ async def get_issue_images(
         ),
     )
     return contents
+
+
+@jira_mcp.tool(
+    tags={"jira", "read", "toolset:jira_issues"},
+    annotations={"title": "Get Issue Attachments", "readOnlyHint": True},
+)
+async def jira_get_issue_attachments(
+    ctx: Context,
+    issue_key: Annotated[
+        str,
+        Field(
+            description="Jira issue key (e.g., 'PROJ-123')",
+            pattern=ISSUE_KEY_PATTERN,
+        ),
+    ],
+) -> str:
+    """List all file attachments on a Jira issue.
+
+    Returns metadata for every attachment: id, filename, size, mimeType,
+    author display name, created timestamp, and the direct content URL.
+
+    Args:
+        ctx: The FastMCP context.
+        issue_key: Jira issue key identifying the issue.
+
+    Returns:
+        JSON string with an ``attachments`` list and a ``total`` count.
+    """
+    jira = await get_jira_fetcher(ctx)
+    attachments = jira.get_issue_attachments(issue_key)
+    result: dict[str, Any] = {
+        "issue_key": issue_key,
+        "total": len(attachments),
+        "attachments": [
+            {
+                "id": att.id,
+                "filename": att.filename,
+                "size": att.size,
+                "mimeType": att.content_type,
+                "author": att.author.display_name if att.author else None,
+                "created": att.created,
+                "content": att.url,
+            }
+            for att in attachments
+        ],
+    }
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@jira_mcp.tool(
+    tags={"jira", "read", "toolset:jira_issues"},
+    annotations={"title": "Download Attachment by ID", "readOnlyHint": True},
+)
+async def jira_download_attachment(
+    ctx: Context,
+    attachment_id: Annotated[
+        str,
+        Field(description="Jira attachment ID (numeric string, e.g., '10042')"),
+    ],
+) -> str:
+    """Download a single Jira attachment by its attachment ID.
+
+    Fetches the attachment metadata via the Jira REST API, downloads the
+    raw bytes using the authenticated session, and returns the content as
+    a base64-encoded string so the caller can reconstruct the file without
+    filesystem access on the server.
+
+    Text attachments (``text/plain`` and similar ``text/*`` MIME types)
+    are returned as plain UTF-8 strings instead of base64.
+
+    Args:
+        ctx: The FastMCP context.
+        attachment_id: Numeric Jira attachment ID.
+
+    Returns:
+        JSON string with ``attachment_id``, ``filename``, ``mimeType``,
+        ``size``, ``encoding`` (``"base64"`` or ``"utf-8"``), and
+        ``content``.
+
+    Raises:
+        ValueError: If the attachment is not found or the ID is invalid.
+    """
+    jira = await get_jira_fetcher(ctx)
+
+    attachment = jira.get_attachment_by_id(attachment_id)
+
+    if not attachment.url:
+        raise ValueError(f"Attachment {attachment_id} has no download URL.")
+
+    data = jira.fetch_attachment_content(attachment.url)
+    if data is None:
+        raise ValueError(f"Failed to download content for attachment {attachment_id}.")
+
+    mime_type = (
+        attachment.content_type
+        or mimetypes.guess_type(attachment.filename)[0]
+        or "application/octet-stream"
+    )
+
+    if mime_type.startswith("text/"):
+        encoding = "utf-8"
+        content = data.decode("utf-8", errors="replace")
+    else:
+        encoding = "base64"
+        content = base64.b64encode(data).decode("ascii")
+
+    result: dict[str, Any] = {
+        "attachment_id": attachment_id,
+        "filename": attachment.filename,
+        "mimeType": mime_type,
+        "size": len(data),
+        "encoding": encoding,
+        "content": content,
+    }
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @jira_mcp.tool(

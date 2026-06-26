@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from requests.exceptions import HTTPError
+
 from ..models.jira import JiraAttachment
 from ..utils.io import validate_safe_path
 from ..utils.media import ATTACHMENT_MAX_BYTES
@@ -131,6 +133,40 @@ class AttachmentsMixin(JiraClient, AttachmentsOperationsProto):
             for item in attachment_data
             if isinstance(item, dict)
         ]
+
+    def get_attachment_by_id(self, attachment_id: str) -> JiraAttachment:
+        """Return metadata for a single attachment by its Jira ID.
+
+        Args:
+            attachment_id: The numeric Jira attachment ID (e.g., '10042').
+
+        Returns:
+            A JiraAttachment instance populated from the Jira API response.
+
+        Raises:
+            ValueError: If the attachment is not found (404) or the ID is
+                missing/invalid.
+            HTTPError: For any non-404 HTTP errors from the Jira API.
+        """
+        if not attachment_id:
+            raise ValueError("attachment_id must not be empty")
+
+        logger.info(f"Fetching attachment metadata for ID {attachment_id}")
+        try:
+            data = self.jira.get_attachment(attachment_id)
+        except HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 404:
+                raise ValueError(
+                    f"Attachment {attachment_id} not found. "
+                    "Verify the attachment ID and project access."
+                ) from exc
+            raise
+
+        if not isinstance(data, dict):
+            raise TypeError(f"Unexpected response type from Jira API: {type(data)}")
+
+        return JiraAttachment.from_api_response(data)
 
     def get_issue_attachment_contents(self, issue_key: str) -> dict[str, Any]:
         """
