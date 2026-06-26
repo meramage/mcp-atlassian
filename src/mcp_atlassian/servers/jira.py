@@ -804,7 +804,7 @@ async def get_worklog(
 
 
 @jira_mcp.tool(
-    tags={"jira", "read", "toolset:jira_attachments"},
+    tags={"jira", "read", "toolset:jira_issues"},
     annotations={"title": "Download Attachments", "readOnlyHint": True},
 )
 async def download_attachments(
@@ -907,7 +907,7 @@ async def download_attachments(
 
 
 @jira_mcp.tool(
-    tags={"jira", "read", "attachments", "toolset:jira_attachments"},
+    tags={"jira", "read", "attachments", "toolset:jira_issues"},
     annotations={"title": "Get Issue Images", "readOnlyHint": True},
 )
 async def get_issue_images(
