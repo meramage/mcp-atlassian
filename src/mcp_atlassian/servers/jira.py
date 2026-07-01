@@ -1,6 +1,5 @@
 """Jira FastMCP server instance and tool definitions."""
 
-import base64
 import json
 import logging
 import mimetypes
@@ -9,8 +8,8 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
-from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
-from pydantic import AnyUrl, Field
+from mcp.types import ImageContent, TextContent
+from pydantic import Field
 from requests.exceptions import HTTPError
 
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
@@ -20,6 +19,7 @@ from mcp_atlassian.models.jira import JiraAttachment
 from mcp_atlassian.models.jira.common import JiraUser
 from mcp_atlassian.servers.dependencies import get_jira_fetcher
 from mcp_atlassian.utils.decorators import check_write_access
+from mcp_atlassian.utils.io import validate_safe_path
 from mcp_atlassian.utils.media import (
     ATTACHMENT_MAX_BYTES,
     fetch_and_encode_attachment,
@@ -818,38 +818,41 @@ async def download_attachments(
             pattern=ISSUE_KEY_PATTERN,
         ),
     ],
-) -> list[TextContent | EmbeddedResource]:
-    """Download attachments from a Jira issue.
+    target_dir: Annotated[
+        str,
+        Field(description="Local directory to save attachments into"),
+    ],
+) -> str:
+    """Download all attachments from a Jira issue to local disk.
 
-    Returns attachment contents as base64-encoded embedded resources so that
-    they are available over the MCP protocol without requiring filesystem
-    access on the server.
+    Streams every attachment's bytes straight to a file under
+    ``target_dir``, named after each attachment's original filename.
+    Content is never embedded inline in the tool response.
 
     Args:
         ctx: The FastMCP context.
         issue_key: Jira issue key.
+        target_dir: Local directory to save attachments into. Created if
+            it does not already exist.
 
     Returns:
-        A list containing a text summary and one EmbeddedResource per
-        successfully downloaded attachment.
+        JSON string with ``success``, ``issue_key``, ``total``,
+        ``downloaded`` (list of ``{filename, path, size}``), and
+        ``failed`` (list of ``{filename, error}``).
     """
     jira = await get_jira_fetcher(ctx)
     result = jira.get_issue_attachment_contents(issue_key=issue_key)
 
-    contents: list[TextContent | EmbeddedResource] = []
-
     if not result.get("success"):
-        contents.append(
-            TextContent(
-                type="text",
-                text=json.dumps(result, indent=2, ensure_ascii=False),
-            )
-        )
-        return contents
+        return json.dumps(result, indent=2, ensure_ascii=False)
 
     attachments = result.get("attachments", [])
     failed = result.get("failed", [])
-    downloaded = 0
+    downloaded: list[dict[str, Any]] = []
+
+    abs_target_dir = (
+        target_dir if os.path.isabs(target_dir) else os.path.abspath(target_dir)
+    )
 
     for attachment in attachments:
         data_bytes: bytes = attachment["data"]
@@ -861,26 +864,26 @@ async def download_attachments(
                     "filename": filename,
                     "error": (
                         f"Attachment '{filename}' is {len(data_bytes)} bytes"
-                        " which exceeds the 50 MB inline limit."
+                        " which exceeds the 50 MB size limit."
                         " Retrieve it directly from Jira."
                     ),
                 }
             )
             continue
 
-        encoded = base64.b64encode(data_bytes).decode("ascii")
-        mime_type = attachment.get("content_type", "application/octet-stream")
-        downloaded += 1
+        safe_filename = Path(filename).name
+        target_path = validate_safe_path(
+            Path(abs_target_dir) / safe_filename, base_dir=abs_target_dir
+        )
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(data_bytes)
 
-        contents.append(
-            EmbeddedResource(
-                type="resource",
-                resource=BlobResourceContents(
-                    uri=AnyUrl(f"attachment:///{issue_key}/{filename}"),
-                    mimeType=mime_type,
-                    blob=encoded,
-                ),
-            )
+        downloaded.append(
+            {
+                "filename": filename,
+                "path": str(target_path),
+                "size": len(data_bytes),
+            }
         )
 
     summary: dict[str, Any] = {
@@ -896,16 +899,7 @@ async def download_attachments(
             "message", f"No attachments found for issue {issue_key}"
         )
 
-    # Insert summary text at the beginning
-    contents.insert(
-        0,
-        TextContent(
-            type="text",
-            text=json.dumps(summary, indent=2, ensure_ascii=False),
-        ),
-    )
-
-    return contents
+    return json.dumps(summary, indent=2, ensure_ascii=False)
 
 
 @jira_mcp.tool(
@@ -1158,13 +1152,19 @@ async def jira_download_attachment(
             "exceeds the 50 MB size limit. Retrieve it directly from Jira."
         )
 
-    safe_filename = Path(attachment.filename).name
-    if not os.path.isabs(target_dir):
-        target_dir = os.path.abspath(target_dir)
-    target_path = Path(target_dir) / safe_filename
-
-    if not jira.download_attachment(attachment.url, str(target_path)):
+    data = jira.fetch_attachment_content(attachment.url)
+    if data is None:
         raise ValueError(f"Failed to download attachment {attachment_id} to disk.")
+
+    safe_filename = Path(attachment.filename).name
+    abs_target_dir = (
+        target_dir if os.path.isabs(target_dir) else os.path.abspath(target_dir)
+    )
+    target_path = validate_safe_path(
+        Path(abs_target_dir) / safe_filename, base_dir=abs_target_dir
+    )
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(data)
 
     mime_type = (
         attachment.content_type

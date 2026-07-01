@@ -787,6 +787,140 @@ async def test_delete_attachment(client, mock_confluence_fetcher):
     assert result_data["attachment_id"] == "att123"
 
 
+# --- download_attachment / download_content_attachments tool tests ---
+
+
+@pytest.mark.anyio
+async def test_download_attachment_saves_to_disk(
+    client, mock_confluence_fetcher, tmp_path
+):
+    """Attachment is streamed to disk, never embedded inline."""
+    mock_confluence_fetcher._v2_adapter.get_attachment_by_id.return_value = {
+        "title": "report.pdf",
+        "extensions": {"mediaType": "application/pdf", "fileSize": 12},
+        "_links": {"download": "/download/attachments/123/report.pdf"},
+    }
+    mock_confluence_fetcher.fetch_attachment_content.return_value = b"pdf content!"
+
+    response = await client.call_tool(
+        "confluence_download_attachment",
+        {"attachment_id": "att123", "target_dir": str(tmp_path)},
+    )
+
+    payload = json.loads(response.content[0].text)
+    expected_path = tmp_path / "report.pdf"
+    assert payload["success"] is True
+    assert payload["filename"] == "report.pdf"
+    assert payload["mimeType"] == "application/pdf"
+    assert payload["path"] == str(expected_path)
+    assert "content" not in payload
+    assert expected_path.read_bytes() == b"pdf content!"
+
+
+@pytest.mark.anyio
+async def test_download_attachment_target_dir_outside_cwd(
+    client, mock_confluence_fetcher, tmp_path, monkeypatch
+):
+    """A target_dir outside the server process's cwd must not be rejected."""
+    other_cwd = tmp_path / "server_launch_dir"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    target_dir = tmp_path / "elsewhere" / "downloads"
+    mock_confluence_fetcher._v2_adapter.get_attachment_by_id.return_value = {
+        "title": "notes.txt",
+        "extensions": {"mediaType": "text/plain", "fileSize": 7},
+        "_links": {"download": "/download/attachments/123/notes.txt"},
+    }
+    mock_confluence_fetcher.fetch_attachment_content.return_value = b"content"
+
+    response = await client.call_tool(
+        "confluence_download_attachment",
+        {"attachment_id": "att123", "target_dir": str(target_dir)},
+    )
+
+    payload = json.loads(response.content[0].text)
+    expected_path = target_dir / "notes.txt"
+    assert payload["success"] is True
+    assert payload["path"] == str(expected_path)
+    assert expected_path.read_bytes() == b"content"
+
+
+@pytest.mark.anyio
+async def test_download_content_attachments_saves_to_disk(
+    client, mock_confluence_fetcher, tmp_path
+):
+    """All attachments for a content item are streamed to disk, not embedded inline."""
+    mock_confluence_fetcher.get_content_attachments.return_value = {
+        "success": True,
+        "content_id": "123",
+        "attachments": [
+            {
+                "id": "att1",
+                "title": "diagram.png",
+                "type": "attachment",
+                "metadata": {"mediaType": "image/png"},
+                "extensions": {"mediaType": "image/png", "fileSize": 4},
+                "_links": {"download": "/download/attachments/123/diagram.png"},
+            }
+        ],
+    }
+    mock_confluence_fetcher.fetch_attachment_content.return_value = b"\x89PNG"
+
+    response = await client.call_tool(
+        "confluence_download_content_attachments",
+        {"content_id": "123", "target_dir": str(tmp_path)},
+    )
+
+    payload = json.loads(response.content[0].text)
+    expected_path = tmp_path / "diagram.png"
+    assert payload["success"] is True
+    assert len(payload["downloaded"]) == 1
+    assert payload["downloaded"][0]["filename"] == "diagram.png"
+    assert payload["downloaded"][0]["path"] == str(expected_path)
+    assert len(payload["failed"]) == 0
+    assert expected_path.read_bytes() == b"\x89PNG"
+    # Only the text summary, no inline EmbeddedResource
+    assert len(response.content) == 1
+
+
+@pytest.mark.anyio
+async def test_download_content_attachments_skips_oversized(
+    client, mock_confluence_fetcher, tmp_path
+):
+    """Oversized attachments are reported as failed, not written to disk."""
+    oversized_data = b"x" * (50 * 1024 * 1024 + 1)
+    mock_confluence_fetcher.get_content_attachments.return_value = {
+        "success": True,
+        "content_id": "123",
+        "attachments": [
+            {
+                "id": "att1",
+                "title": "huge.bin",
+                "type": "attachment",
+                "metadata": {"mediaType": "application/octet-stream"},
+                "extensions": {
+                    "mediaType": "application/octet-stream",
+                    "fileSize": len(oversized_data),
+                },
+                "_links": {"download": "/download/attachments/123/huge.bin"},
+            }
+        ],
+    }
+
+    response = await client.call_tool(
+        "confluence_download_content_attachments",
+        {"content_id": "123", "target_dir": str(tmp_path)},
+    )
+
+    payload = json.loads(response.content[0].text)
+    assert payload["downloaded"] == []
+    assert len(payload["failed"]) == 1
+    assert "50 MB" in payload["failed"][0]["error"]
+    assert list(tmp_path.iterdir()) == []
+    mock_confluence_fetcher.fetch_attachment_content.assert_not_called()
+
+
 # --- get_page_images tool tests ---
 
 

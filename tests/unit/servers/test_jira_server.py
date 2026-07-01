@@ -1773,7 +1773,7 @@ async def test_update_issue_components_with_additional_fields(
 
 @pytest.mark.anyio
 async def test_download_attachments_skips_oversized_at_server_layer(
-    jira_client, mock_jira_fetcher
+    jira_client, mock_jira_fetcher, tmp_path
 ):
     """Server-layer fallback: attachment data bytes > 50MB are caught."""
     oversized_data = b"x" * (50 * 1024 * 1024 + 1)
@@ -1795,22 +1795,24 @@ async def test_download_attachments_skips_oversized_at_server_layer(
 
     response = await jira_client.call_tool(
         "jira_download_attachments",
-        {"issue_key": "TEST-123"},
+        {"issue_key": "TEST-123", "target_dir": str(tmp_path)},
     )
 
-    # The summary text should be first
     summary = json.loads(response.content[0].text)
     assert summary["success"] is True
-    # The oversized attachment should be in the failed list, not embedded
+    # The oversized attachment should be in the failed list, not written to disk
     assert len(summary["failed"]) == 1
     assert "50 MB" in summary["failed"][0]["error"]
-    # No EmbeddedResource should be returned for the oversized attachment
-    assert len(response.content) == 1  # Only the text summary, no resource
+    assert summary["downloaded"] == []
+    assert list(tmp_path.iterdir()) == []
+    assert len(response.content) == 1  # Only the text summary, no inline content
 
 
 @pytest.mark.anyio
-async def test_download_attachments_allows_normal_size(jira_client, mock_jira_fetcher):
-    """Normal-size attachments pass through fine at server layer."""
+async def test_download_attachments_allows_normal_size(
+    jira_client, mock_jira_fetcher, tmp_path
+):
+    """Normal-size attachments are written to disk, not embedded inline."""
     normal_data = b"normal content"
 
     mock_jira_fetcher.get_issue_attachment_contents.return_value = {
@@ -1830,15 +1832,20 @@ async def test_download_attachments_allows_normal_size(jira_client, mock_jira_fe
 
     response = await jira_client.call_tool(
         "jira_download_attachments",
-        {"issue_key": "TEST-123"},
+        {"issue_key": "TEST-123", "target_dir": str(tmp_path)},
     )
 
     summary = json.loads(response.content[0].text)
     assert summary["success"] is True
-    assert summary["downloaded"] == 1
+    assert len(summary["downloaded"]) == 1
+    assert summary["downloaded"][0]["filename"] == "small.txt"
+    expected_path = tmp_path / "small.txt"
+    assert summary["downloaded"][0]["path"] == str(expected_path)
+    assert summary["downloaded"][0]["size"] == len(normal_data)
     assert len(summary["failed"]) == 0
-    # Should have text summary + 1 embedded resource
-    assert len(response.content) == 2
+    assert expected_path.read_bytes() == normal_data
+    # Only the text summary, no inline EmbeddedResource
+    assert len(response.content) == 1
 
 
 # ── jira_get_issue_images tests ──────────────────────────────────────

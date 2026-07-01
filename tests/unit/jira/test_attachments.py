@@ -1541,7 +1541,7 @@ class TestAttachmentToolsServerLayer:
         )
         fetcher = MagicMock()
         fetcher.get_attachment_by_id.return_value = attachment
-        fetcher.download_attachment.return_value = True
+        fetcher.fetch_attachment_content.return_value = b"hello world"
 
         with self._patch_fetcher(fetcher):
             raw = await jira_download_attachment.fn(
@@ -1549,16 +1549,17 @@ class TestAttachmentToolsServerLayer:
             )
 
         payload = json.loads(raw)
-        expected_path = str(tmp_path / "notes.txt")
+        expected_path = tmp_path / "notes.txt"
         assert payload["attachment_id"] == "10042"
         assert payload["filename"] == "notes.txt"
         assert payload["mimeType"] == "text/plain"
         assert payload["size"] == 11
-        assert payload["path"] == expected_path
+        assert payload["path"] == str(expected_path)
         assert "content" not in payload
         assert "encoding" not in payload
-        fetcher.download_attachment.assert_called_once_with(
-            "https://jira.example.com/attachment/10042", expected_path
+        assert expected_path.read_bytes() == b"hello world"
+        fetcher.fetch_attachment_content.assert_called_once_with(
+            "https://jira.example.com/attachment/10042"
         )
 
     @pytest.mark.anyio
@@ -1569,18 +1570,19 @@ class TestAttachmentToolsServerLayer:
         from mcp_atlassian.models.jira import JiraAttachment
         from mcp_atlassian.servers.jira import jira_download_attachment
 
+        raw_bytes = b"\x89PNG\r\n\x1a\n\x00\x01"
         attachment = JiraAttachment.from_api_response(
             {
                 "id": "10044",
                 "filename": "image.png",
-                "size": 8,
+                "size": len(raw_bytes),
                 "mimeType": "image/png",
                 "content": "https://jira.example.com/attachment/10044",
             }
         )
         fetcher = MagicMock()
         fetcher.get_attachment_by_id.return_value = attachment
-        fetcher.download_attachment.return_value = True
+        fetcher.fetch_attachment_content.return_value = raw_bytes
 
         with self._patch_fetcher(fetcher):
             raw = await jira_download_attachment.fn(
@@ -1588,14 +1590,55 @@ class TestAttachmentToolsServerLayer:
             )
 
         payload = json.loads(raw)
-        expected_path = str(tmp_path / "image.png")
+        expected_path = tmp_path / "image.png"
         assert payload["mimeType"] == "image/png"
-        assert payload["path"] == expected_path
+        assert payload["path"] == str(expected_path)
         assert "content" not in payload
         assert "encoding" not in payload
-        fetcher.download_attachment.assert_called_once_with(
-            "https://jira.example.com/attachment/10044", expected_path
+        assert expected_path.read_bytes() == raw_bytes
+
+    @pytest.mark.anyio
+    async def test_download_attachment_target_dir_outside_cwd(
+        self, mock_ctx: MagicMock, tmp_path, monkeypatch
+    ):
+        """A target_dir outside the server process's cwd must not be rejected.
+
+        Regression test: the tool previously delegated to
+        AttachmentsMixin.download_attachment(), whose internal
+        validate_safe_path() call defaults base_dir to os.getcwd(), so any
+        target_dir outside the server's launch directory was misclassified
+        as path traversal and silently failed.
+        """
+        from mcp_atlassian.models.jira import JiraAttachment
+        from mcp_atlassian.servers.jira import jira_download_attachment
+
+        other_cwd = tmp_path / "server_launch_dir"
+        other_cwd.mkdir()
+        monkeypatch.chdir(other_cwd)
+
+        target_dir = tmp_path / "elsewhere" / "downloads"
+        attachment = JiraAttachment.from_api_response(
+            {
+                "id": "10048",
+                "filename": "report.txt",
+                "size": 7,
+                "mimeType": "text/plain",
+                "content": "https://jira.example.com/attachment/10048",
+            }
         )
+        fetcher = MagicMock()
+        fetcher.get_attachment_by_id.return_value = attachment
+        fetcher.fetch_attachment_content.return_value = b"content"
+
+        with self._patch_fetcher(fetcher):
+            raw = await jira_download_attachment.fn(
+                mock_ctx, attachment_id="10048", target_dir=str(target_dir)
+            )
+
+        payload = json.loads(raw)
+        expected_path = target_dir / "report.txt"
+        assert payload["path"] == str(expected_path)
+        assert expected_path.read_bytes() == b"content"
 
     @pytest.mark.anyio
     async def test_download_attachment_empty_url(self, mock_ctx: MagicMock, tmp_path):
@@ -1615,13 +1658,13 @@ class TestAttachmentToolsServerLayer:
                 await jira_download_attachment.fn(
                     mock_ctx, attachment_id="10045", target_dir=str(tmp_path)
                 )
-        fetcher.download_attachment.assert_not_called()
+        fetcher.fetch_attachment_content.assert_not_called()
 
     @pytest.mark.anyio
     async def test_download_attachment_download_failure(
         self, mock_ctx: MagicMock, tmp_path
     ):
-        """Raises ValueError when the disk write fails."""
+        """Raises ValueError when the content fetch fails."""
         from mcp_atlassian.models.jira import JiraAttachment
         from mcp_atlassian.servers.jira import jira_download_attachment
 
@@ -1636,7 +1679,7 @@ class TestAttachmentToolsServerLayer:
         )
         fetcher = MagicMock()
         fetcher.get_attachment_by_id.return_value = attachment
-        fetcher.download_attachment.return_value = False
+        fetcher.fetch_attachment_content.return_value = None
 
         with self._patch_fetcher(fetcher):
             with pytest.raises(ValueError, match="Failed to download attachment"):
@@ -1671,4 +1714,4 @@ class TestAttachmentToolsServerLayer:
                     mock_ctx, attachment_id="10047", target_dir=str(tmp_path)
                 )
         # The bytes must never be fetched for oversized attachments.
-        fetcher.download_attachment.assert_not_called()
+        fetcher.fetch_attachment_content.assert_not_called()
