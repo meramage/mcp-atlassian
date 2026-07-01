@@ -1,7 +1,7 @@
 {
   "name": "mcp-atlassian",
-  "version": "0.1.1",
-  "description": "Atlassian MCP server for Claude Code — 27 curated Jira and Confluence tools (issues, search, transitions, comments, pages). Expand via TOOLSETS env var.",
+  "version": "0.1.3",
+  "description": "Atlassian MCP server for Claude Code \u2014 27 curated Jira and Confluence tools (issues, search, transitions, comments, pages). Expand via TOOLSETS env var.",
   "rules": "rules",
   "author": {
     "name": "meramage",
