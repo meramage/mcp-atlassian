@@ -1,6 +1,6 @@
 """Toolset definitions and filtering utilities for MCP Atlassian.
 
-Groups 68 tools into 21 named toolsets controlled via the TOOLSETS env var.
+Groups 75 tools into 20 named toolsets controlled via the TOOLSETS env var.
 Supports 'all', 'default', and comma-separated toolset names.
 """
 
@@ -22,12 +22,12 @@ class ToolsetDefinition:
     default: bool
 
 
-# --- Jira toolsets (15) ---
+# --- Jira toolsets (14) ---
 
 JIRA_TOOLSETS: dict[str, ToolsetDefinition] = {
     "jira_issues": ToolsetDefinition(
         name="jira_issues",
-        description="Core issue operations: CRUD, search, batch, changelogs",
+        description="Core issue operations: CRUD, search, batch, changelogs, attachments",
         default=True,
     ),
     "jira_fields": ToolsetDefinition(
@@ -63,11 +63,6 @@ JIRA_TOOLSETS: dict[str, ToolsetDefinition] = {
     "jira_worklog": ToolsetDefinition(
         name="jira_worklog",
         description="Time tracking and worklog operations",
-        default=False,
-    ),
-    "jira_attachments": ToolsetDefinition(
-        name="jira_attachments",
-        description="Attachment download and image retrieval",
         default=False,
     ),
     "jira_users": ToolsetDefinition(
@@ -152,10 +147,10 @@ DEFAULT_TOOLSETS: set[str] = {
 def get_enabled_toolsets() -> set[str]:
     """Parse the TOOLSETS env var into a set of enabled toolset names.
 
-    Supports keywords 'all' (all 21 toolsets) and 'default' (6 defaults),
+    Supports keywords 'all' (all 20 toolsets) and 'default' (6 defaults),
     plus comma-separated specific toolset names. Case-insensitive for keywords.
 
-    When TOOLSETS is unset or empty, returns the 6 default toolsets (27 tools).
+    When TOOLSETS is unset or empty, returns the 6 default toolsets (31 tools).
     Set ``TOOLSETS=all`` explicitly to enable all toolsets.
 
     Returns:
@@ -164,16 +159,16 @@ def get_enabled_toolsets() -> set[str]:
         names are given, returns an empty set (fail-closed).
 
     Examples:
-        TOOLSETS unset -> 6 default toolsets (27 tools)
-        TOOLSETS="" -> 6 default toolsets (27 tools)
-        TOOLSETS="all" -> all 21 names
+        TOOLSETS unset -> 6 default toolsets (31 tools)
+        TOOLSETS="" -> 6 default toolsets (31 tools)
+        TOOLSETS="all" -> all 20 names
         TOOLSETS="default" -> 6 default names
         TOOLSETS="default,jira_agile" -> defaults + jira_agile
         TOOLSETS="typo_name" -> set() (fail-closed)
     """
     toolsets_str = os.getenv("TOOLSETS")
     if not toolsets_str:
-        logger.info("TOOLSETS not set — using 6 default toolsets (27 tools).")
+        logger.info("TOOLSETS not set — using 6 default toolsets (31 tools).")
         return DEFAULT_TOOLSETS
 
     # Split by comma and strip whitespace, filter empty tokens
@@ -181,7 +176,7 @@ def get_enabled_toolsets() -> set[str]:
     tokens = [t for t in tokens if t]
 
     if not tokens:
-        logger.info("TOOLSETS empty — using 6 default toolsets (27 tools).")
+        logger.info("TOOLSETS empty — using 6 default toolsets (31 tools).")
         return DEFAULT_TOOLSETS
 
     result: set[str] = set()

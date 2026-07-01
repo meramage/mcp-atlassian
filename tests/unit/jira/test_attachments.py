@@ -1,7 +1,8 @@
 """Tests for the Jira attachments module."""
 
+import json
 from pathlib import Path
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 
@@ -1316,3 +1317,358 @@ class TestAttachmentsMixin:
         assert result[1].filename == "report.pdf"
         # No download calls should have been made
         attachments_mixin.jira._session.get.assert_not_called()
+
+
+class TestGetAttachmentById:
+    """Tests for AttachmentsMixin.get_attachment_by_id."""
+
+    @pytest.fixture
+    def attachments_mixin(self, jira_fetcher: JiraFetcher) -> AttachmentsMixin:
+        """Set up test fixtures."""
+        mixin = jira_fetcher
+        mixin.jira = MagicMock()
+        mixin.jira._session = MagicMock()
+        return mixin
+
+    def test_get_attachment_by_id_success(self, attachments_mixin: AttachmentsMixin):
+        """Returns a JiraAttachment when the API responds with valid data."""
+        from mcp_atlassian.models.jira import JiraAttachment
+
+        attachments_mixin.jira.get_attachment.return_value = {
+            "id": "10042",
+            "filename": "screenshot.png",
+            "size": 4096,
+            "mimeType": "image/png",
+            "content": "https://jira.example.com/secure/attachment/10042/screenshot.png",
+            "created": "2024-01-15T10:00:00.000+0000",
+            "author": {"displayName": "Alice"},
+        }
+
+        result = attachments_mixin.get_attachment_by_id("10042")
+
+        assert isinstance(result, JiraAttachment)
+        assert result.id == "10042"
+        assert result.filename == "screenshot.png"
+        assert result.size == 4096
+        assert result.content_type == "image/png"
+        assert (
+            result.url
+            == "https://jira.example.com/secure/attachment/10042/screenshot.png"
+        )
+        attachments_mixin.jira.get_attachment.assert_called_once_with("10042")
+
+    def test_get_attachment_by_id_not_found(self, attachments_mixin: AttachmentsMixin):
+        """Raises ValueError with a descriptive message on 404."""
+        from unittest.mock import MagicMock
+
+        from requests.exceptions import HTTPError
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        attachments_mixin.jira.get_attachment.side_effect = HTTPError(
+            response=mock_response
+        )
+
+        with pytest.raises(ValueError, match="Attachment 99999 not found"):
+            attachments_mixin.get_attachment_by_id("99999")
+
+    def test_get_attachment_by_id_empty_id(self, attachments_mixin: AttachmentsMixin):
+        """Raises ValueError immediately when attachment_id is empty."""
+        with pytest.raises(ValueError, match="attachment_id must not be empty"):
+            attachments_mixin.get_attachment_by_id("")
+
+    def test_get_attachment_by_id_http_error_non_404(
+        self, attachments_mixin: AttachmentsMixin
+    ):
+        """Re-raises non-404 HTTP errors unchanged."""
+        from unittest.mock import MagicMock
+
+        from requests.exceptions import HTTPError
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        http_err = HTTPError(response=mock_response)
+        attachments_mixin.jira.get_attachment.side_effect = http_err
+
+        with pytest.raises(HTTPError):
+            attachments_mixin.get_attachment_by_id("10042")
+
+    def test_get_attachment_by_id_unexpected_response_type(
+        self, attachments_mixin: AttachmentsMixin
+    ):
+        """Raises TypeError when the API returns a non-dict."""
+        attachments_mixin.jira.get_attachment.return_value = "unexpected"
+
+        with pytest.raises(TypeError, match="Unexpected response type"):
+            attachments_mixin.get_attachment_by_id("10042")
+
+
+class TestAttachmentToolsServerLayer:
+    """Server-layer tests for the attachment MCP tools.
+
+    These call the FastMCP tool functions directly via their ``.fn``
+    attribute with a mocked ``get_jira_fetcher`` so the server-layer
+    serialization, validation, and size-guard logic is exercised.
+    """
+
+    @pytest.fixture
+    def mock_ctx(self) -> MagicMock:
+        """A throwaway FastMCP context (the fetcher lookup is patched)."""
+        return MagicMock()
+
+    @staticmethod
+    def _patch_fetcher(fetcher: MagicMock):
+        return patch(
+            "mcp_atlassian.servers.jira.get_jira_fetcher",
+            new=AsyncMock(return_value=fetcher),
+        )
+
+    @pytest.mark.anyio
+    async def test_get_issue_attachments_success(self, mock_ctx: MagicMock):
+        """Returns serialized metadata for each attachment."""
+        from mcp_atlassian.models.jira import JiraAttachment
+        from mcp_atlassian.servers.jira import jira_get_issue_attachments
+
+        attachments = [
+            JiraAttachment.from_api_response(
+                {
+                    "id": "10042",
+                    "filename": "screenshot.png",
+                    "size": 4096,
+                    "mimeType": "image/png",
+                    "content": "https://jira.example.com/attachment/10042",
+                    "created": "2024-01-15T10:00:00.000+0000",
+                    "author": {"displayName": "Alice"},
+                }
+            ),
+            JiraAttachment.from_api_response(
+                {
+                    "id": "10043",
+                    "filename": "report.pdf",
+                    "size": 8192,
+                    "mimeType": "application/pdf",
+                    "content": "https://jira.example.com/attachment/10043",
+                    "created": "2024-01-16T10:00:00.000+0000",
+                    "author": {"displayName": "Bob"},
+                }
+            ),
+        ]
+        fetcher = MagicMock()
+        fetcher.get_issue_attachments.return_value = attachments
+
+        with self._patch_fetcher(fetcher):
+            raw = await jira_get_issue_attachments.fn(mock_ctx, issue_key="PROJ-1")
+
+        payload = json.loads(raw)
+        assert payload["issue_key"] == "PROJ-1"
+        assert payload["total"] == 2
+        assert payload["returned"] == 2
+        assert len(payload["attachments"]) == 2
+        first = payload["attachments"][0]
+        assert first["id"] == "10042"
+        assert first["filename"] == "screenshot.png"
+        assert first["size"] == 4096
+        assert first["mimeType"] == "image/png"
+        assert first["author"] == "Alice"
+        assert first["content"] == "https://jira.example.com/attachment/10042"
+        fetcher.get_issue_attachments.assert_called_once_with("PROJ-1")
+
+    @pytest.mark.anyio
+    async def test_get_issue_attachments_issue_not_found(self, mock_ctx: MagicMock):
+        """Propagates the underlying error when the issue does not exist."""
+        from requests.exceptions import HTTPError
+
+        from mcp_atlassian.servers.jira import jira_get_issue_attachments
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        fetcher = MagicMock()
+        fetcher.get_issue_attachments.side_effect = HTTPError(response=mock_response)
+
+        with self._patch_fetcher(fetcher):
+            with pytest.raises(HTTPError):
+                await jira_get_issue_attachments.fn(mock_ctx, issue_key="NOPE-999")
+
+    @pytest.mark.anyio
+    async def test_get_issue_attachments_respects_max_results(
+        self, mock_ctx: MagicMock
+    ):
+        """Caps the serialized list at ``max_results`` while reporting total."""
+        from mcp_atlassian.models.jira import JiraAttachment
+        from mcp_atlassian.servers.jira import jira_get_issue_attachments
+
+        attachments = [
+            JiraAttachment.from_api_response(
+                {
+                    "id": str(idx),
+                    "filename": f"file{idx}.txt",
+                    "size": 10,
+                    "mimeType": "text/plain",
+                    "content": f"https://jira.example.com/attachment/{idx}",
+                }
+            )
+            for idx in range(5)
+        ]
+        fetcher = MagicMock()
+        fetcher.get_issue_attachments.return_value = attachments
+
+        with self._patch_fetcher(fetcher):
+            raw = await jira_get_issue_attachments.fn(
+                mock_ctx, issue_key="PROJ-1", max_results=2
+            )
+
+        payload = json.loads(raw)
+        assert payload["total"] == 5
+        assert payload["returned"] == 2
+        assert len(payload["attachments"]) == 2
+
+    @pytest.mark.anyio
+    async def test_download_attachment_saves_text_to_disk(
+        self, mock_ctx: MagicMock, tmp_path
+    ):
+        """Text attachments are streamed to disk, never embedded inline."""
+        from mcp_atlassian.models.jira import JiraAttachment
+        from mcp_atlassian.servers.jira import jira_download_attachment
+
+        attachment = JiraAttachment.from_api_response(
+            {
+                "id": "10042",
+                "filename": "notes.txt",
+                "size": 11,
+                "mimeType": "text/plain",
+                "content": "https://jira.example.com/attachment/10042",
+            }
+        )
+        fetcher = MagicMock()
+        fetcher.get_attachment_by_id.return_value = attachment
+        fetcher.download_attachment.return_value = True
+
+        with self._patch_fetcher(fetcher):
+            raw = await jira_download_attachment.fn(
+                mock_ctx, attachment_id="10042", target_dir=str(tmp_path)
+            )
+
+        payload = json.loads(raw)
+        expected_path = str(tmp_path / "notes.txt")
+        assert payload["attachment_id"] == "10042"
+        assert payload["filename"] == "notes.txt"
+        assert payload["mimeType"] == "text/plain"
+        assert payload["size"] == 11
+        assert payload["path"] == expected_path
+        assert "content" not in payload
+        assert "encoding" not in payload
+        fetcher.download_attachment.assert_called_once_with(
+            "https://jira.example.com/attachment/10042", expected_path
+        )
+
+    @pytest.mark.anyio
+    async def test_download_attachment_saves_image_to_disk_not_inline(
+        self, mock_ctx: MagicMock, tmp_path
+    ):
+        """Image attachments must also be saved to disk, never inlined as base64."""
+        from mcp_atlassian.models.jira import JiraAttachment
+        from mcp_atlassian.servers.jira import jira_download_attachment
+
+        attachment = JiraAttachment.from_api_response(
+            {
+                "id": "10044",
+                "filename": "image.png",
+                "size": 8,
+                "mimeType": "image/png",
+                "content": "https://jira.example.com/attachment/10044",
+            }
+        )
+        fetcher = MagicMock()
+        fetcher.get_attachment_by_id.return_value = attachment
+        fetcher.download_attachment.return_value = True
+
+        with self._patch_fetcher(fetcher):
+            raw = await jira_download_attachment.fn(
+                mock_ctx, attachment_id="10044", target_dir=str(tmp_path)
+            )
+
+        payload = json.loads(raw)
+        expected_path = str(tmp_path / "image.png")
+        assert payload["mimeType"] == "image/png"
+        assert payload["path"] == expected_path
+        assert "content" not in payload
+        assert "encoding" not in payload
+        fetcher.download_attachment.assert_called_once_with(
+            "https://jira.example.com/attachment/10044", expected_path
+        )
+
+    @pytest.mark.anyio
+    async def test_download_attachment_empty_url(self, mock_ctx: MagicMock, tmp_path):
+        """Raises ValueError when the attachment has no download URL."""
+        from mcp_atlassian.models.jira import JiraAttachment
+        from mcp_atlassian.servers.jira import jira_download_attachment
+
+        attachment = JiraAttachment.from_api_response(
+            {"id": "10045", "filename": "broken.txt", "size": 5}
+        )
+        assert attachment.url is None
+        fetcher = MagicMock()
+        fetcher.get_attachment_by_id.return_value = attachment
+
+        with self._patch_fetcher(fetcher):
+            with pytest.raises(ValueError, match="has no download URL"):
+                await jira_download_attachment.fn(
+                    mock_ctx, attachment_id="10045", target_dir=str(tmp_path)
+                )
+        fetcher.download_attachment.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_download_attachment_download_failure(
+        self, mock_ctx: MagicMock, tmp_path
+    ):
+        """Raises ValueError when the disk write fails."""
+        from mcp_atlassian.models.jira import JiraAttachment
+        from mcp_atlassian.servers.jira import jira_download_attachment
+
+        attachment = JiraAttachment.from_api_response(
+            {
+                "id": "10046",
+                "filename": "doc.txt",
+                "size": 10,
+                "mimeType": "text/plain",
+                "content": "https://jira.example.com/attachment/10046",
+            }
+        )
+        fetcher = MagicMock()
+        fetcher.get_attachment_by_id.return_value = attachment
+        fetcher.download_attachment.return_value = False
+
+        with self._patch_fetcher(fetcher):
+            with pytest.raises(ValueError, match="Failed to download attachment"):
+                await jira_download_attachment.fn(
+                    mock_ctx, attachment_id="10046", target_dir=str(tmp_path)
+                )
+
+    @pytest.mark.anyio
+    async def test_download_attachment_size_limit_exceeded(
+        self, mock_ctx: MagicMock, tmp_path
+    ):
+        """Raises before downloading when size exceeds the 50 MB limit."""
+        from mcp_atlassian.models.jira import JiraAttachment
+        from mcp_atlassian.servers.jira import jira_download_attachment
+        from mcp_atlassian.utils.media import ATTACHMENT_MAX_BYTES
+
+        attachment = JiraAttachment.from_api_response(
+            {
+                "id": "10047",
+                "filename": "huge.bin",
+                "size": ATTACHMENT_MAX_BYTES + 1,
+                "mimeType": "application/octet-stream",
+                "content": "https://jira.example.com/attachment/10047",
+            }
+        )
+        fetcher = MagicMock()
+        fetcher.get_attachment_by_id.return_value = attachment
+
+        with self._patch_fetcher(fetcher):
+            with pytest.raises(ValueError, match="exceeds the 50 MB size limit"):
+                await jira_download_attachment.fn(
+                    mock_ctx, attachment_id="10047", target_dir=str(tmp_path)
+                )
+        # The bytes must never be fetched for oversized attachments.
+        fetcher.download_attachment.assert_not_called()

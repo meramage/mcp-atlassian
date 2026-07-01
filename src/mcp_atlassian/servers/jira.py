@@ -3,11 +3,14 @@
 import base64
 import json
 import logging
+import mimetypes
+import os
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
 from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
-from pydantic import Field
+from pydantic import AnyUrl, Field
 from requests.exceptions import HTTPError
 
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
@@ -803,7 +806,7 @@ async def get_worklog(
 
 
 @jira_mcp.tool(
-    tags={"jira", "read", "toolset:jira_attachments"},
+    tags={"jira", "read", "toolset:jira_issues"},
     annotations={"title": "Download Attachments", "readOnlyHint": True},
 )
 async def download_attachments(
@@ -873,7 +876,7 @@ async def download_attachments(
             EmbeddedResource(
                 type="resource",
                 resource=BlobResourceContents(
-                    uri=f"attachment:///{issue_key}/{filename}",
+                    uri=AnyUrl(f"attachment:///{issue_key}/{filename}"),
                     mimeType=mime_type,
                     blob=encoded,
                 ),
@@ -906,7 +909,7 @@ async def download_attachments(
 
 
 @jira_mcp.tool(
-    tags={"jira", "read", "attachments", "toolset:jira_attachments"},
+    tags={"jira", "read", "attachments", "toolset:jira_issues"},
     annotations={"title": "Get Issue Images", "readOnlyHint": True},
 )
 async def get_issue_images(
@@ -1035,6 +1038,148 @@ async def get_issue_images(
         ),
     )
     return contents
+
+
+@jira_mcp.tool(
+    tags={"jira", "read", "toolset:jira_issues"},
+    annotations={"title": "Get Issue Attachments", "readOnlyHint": True},
+)
+async def jira_get_issue_attachments(
+    ctx: Context,
+    issue_key: Annotated[
+        str,
+        Field(
+            description="Jira issue key (e.g., 'PROJ-123')",
+            pattern=ISSUE_KEY_PATTERN,
+        ),
+    ],
+    max_results: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of attachments to serialize (1-100). The issue "
+                "may hold more; only the first ``max_results`` are returned. The "
+                "``total`` field always reflects the true attachment count."
+            ),
+            default=50,
+            ge=1,
+            le=100,
+        ),
+    ] = 50,
+) -> str:
+    """List file attachments on a Jira issue.
+
+    Returns metadata for each attachment: id, filename, size, mimeType,
+    author display name, created timestamp, and the direct content URL.
+
+    The returned ``attachments`` list is capped at ``max_results`` entries
+    (default 50). The ``total`` field always reports the full attachment
+    count on the issue, while ``returned`` reports how many were serialized.
+
+    Args:
+        ctx: The FastMCP context.
+        issue_key: Jira issue key identifying the issue.
+        max_results: Maximum number of attachments to serialize (1-100).
+
+    Returns:
+        JSON string with an ``attachments`` list, a ``total`` count, and a
+        ``returned`` count.
+    """
+    jira = await get_jira_fetcher(ctx)
+    attachments = jira.get_issue_attachments(issue_key)
+    capped = attachments[:max_results]
+    result: dict[str, Any] = {
+        "issue_key": issue_key,
+        "total": len(attachments),
+        "returned": len(capped),
+        "attachments": [
+            {
+                "id": att.id,
+                "filename": att.filename,
+                "size": att.size,
+                "mimeType": att.content_type,
+                "author": att.author.display_name if att.author else None,
+                "created": att.created,
+                "content": att.url,
+            }
+            for att in capped
+        ],
+    }
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@jira_mcp.tool(
+    tags={"jira", "read", "toolset:jira_issues"},
+    annotations={"title": "Download Attachment by ID", "readOnlyHint": True},
+)
+async def jira_download_attachment(
+    ctx: Context,
+    attachment_id: Annotated[
+        str,
+        Field(description="Jira attachment ID (numeric string, e.g., '10042')"),
+    ],
+    target_dir: Annotated[
+        str,
+        Field(description="Local directory to save the attachment into"),
+    ],
+) -> str:
+    """Download a single Jira attachment by its attachment ID to local disk.
+
+    Fetches the attachment metadata via the Jira REST API and streams the
+    raw bytes straight to a file under ``target_dir``, named after the
+    attachment's original filename. Content is never embedded inline in
+    the tool response, regardless of MIME type (text, image, or otherwise).
+
+    Args:
+        ctx: The FastMCP context.
+        attachment_id: Numeric Jira attachment ID.
+        target_dir: Local directory to save the attachment into. Created
+            if it does not already exist.
+
+    Returns:
+        JSON string with ``attachment_id``, ``filename``, ``mimeType``,
+        ``size``, and ``path`` (the absolute path of the saved file).
+
+    Raises:
+        ValueError: If the attachment is not found, the ID is invalid, the
+            attachment has no download URL, the download fails, or the
+            attachment exceeds the 50 MB size limit.
+    """
+    jira = await get_jira_fetcher(ctx)
+
+    attachment = jira.get_attachment_by_id(attachment_id)
+
+    if not attachment.url:
+        raise ValueError(f"Attachment {attachment_id} has no download URL.")
+
+    if attachment.size > ATTACHMENT_MAX_BYTES:
+        raise ValueError(
+            f"Attachment {attachment_id} is {attachment.size} bytes which "
+            "exceeds the 50 MB size limit. Retrieve it directly from Jira."
+        )
+
+    safe_filename = Path(attachment.filename).name
+    if not os.path.isabs(target_dir):
+        target_dir = os.path.abspath(target_dir)
+    target_path = Path(target_dir) / safe_filename
+
+    if not jira.download_attachment(attachment.url, str(target_path)):
+        raise ValueError(f"Failed to download attachment {attachment_id} to disk.")
+
+    mime_type = (
+        attachment.content_type
+        or mimetypes.guess_type(attachment.filename)[0]
+        or "application/octet-stream"
+    )
+
+    result: dict[str, Any] = {
+        "attachment_id": attachment_id,
+        "filename": attachment.filename,
+        "mimeType": mime_type,
+        "size": attachment.size,
+        "path": str(target_path),
+    }
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @jira_mcp.tool(
@@ -2100,7 +2245,7 @@ async def create_remote_issue_link(
         raise ValueError("title is required.")
 
     # Build the remote link data structure
-    link_object = {
+    link_object: dict[str, Any] = {
         "url": url,
         "title": title,
     }
@@ -2111,7 +2256,7 @@ async def create_remote_issue_link(
     if icon_url:
         link_object["icon"] = {"url16x16": icon_url, "title": title}
 
-    link_data = {"object": link_object}
+    link_data: dict[str, Any] = {"object": link_object}
 
     if relationship:
         link_data["relationship"] = relationship
@@ -2728,7 +2873,7 @@ async def batch_create_versions(
     except Exception as e:
         raise ValueError(f"Invalid input for versions: {e}") from e
 
-    results = []
+    results: list[dict[str, Any]] = []
     if not version_list:
         return json.dumps(results, indent=2, ensure_ascii=False)
 
