@@ -10,7 +10,7 @@ from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
 from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
-from pydantic import Field
+from pydantic import AnyUrl, Field
 from requests.exceptions import HTTPError
 
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
@@ -876,7 +876,7 @@ async def download_attachments(
             EmbeddedResource(
                 type="resource",
                 resource=BlobResourceContents(
-                    uri=f"attachment:///{issue_key}/{filename}",
+                    uri=AnyUrl(f"attachment:///{issue_key}/{filename}"),
                     mimeType=mime_type,
                     blob=encoded,
                 ),
@@ -2245,7 +2245,7 @@ async def create_remote_issue_link(
         raise ValueError("title is required.")
 
     # Build the remote link data structure
-    link_object = {
+    link_object: dict[str, Any] = {
         "url": url,
         "title": title,
     }
@@ -2256,7 +2256,7 @@ async def create_remote_issue_link(
     if icon_url:
         link_object["icon"] = {"url16x16": icon_url, "title": title}
 
-    link_data = {"object": link_object}
+    link_data: dict[str, Any] = {"object": link_object}
 
     if relationship:
         link_data["relationship"] = relationship
@@ -2873,7 +2873,7 @@ async def batch_create_versions(
     except Exception as e:
         raise ValueError(f"Invalid input for versions: {e}") from e
 
-    results = []
+    results: list[dict[str, Any]] = []
     if not version_list:
         return json.dumps(results, indent=2, ensure_ascii=False)
 
