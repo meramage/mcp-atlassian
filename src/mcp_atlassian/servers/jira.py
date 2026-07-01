@@ -1152,13 +1152,19 @@ async def jira_download_attachment(
             "exceeds the 50 MB size limit. Retrieve it directly from Jira."
         )
 
-    safe_filename = Path(attachment.filename).name
-    if not os.path.isabs(target_dir):
-        target_dir = os.path.abspath(target_dir)
-    target_path = Path(target_dir) / safe_filename
-
-    if not jira.download_attachment(attachment.url, str(target_path)):
+    data = jira.fetch_attachment_content(attachment.url)
+    if data is None:
         raise ValueError(f"Failed to download attachment {attachment_id} to disk.")
+
+    safe_filename = Path(attachment.filename).name
+    abs_target_dir = (
+        target_dir if os.path.isabs(target_dir) else os.path.abspath(target_dir)
+    )
+    target_path = validate_safe_path(
+        Path(abs_target_dir) / safe_filename, base_dir=abs_target_dir
+    )
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(data)
 
     mime_type = (
         attachment.content_type
