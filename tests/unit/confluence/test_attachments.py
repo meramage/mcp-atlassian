@@ -6,7 +6,6 @@ import tempfile
 from unittest.mock import AsyncMock, MagicMock, Mock, mock_open, patch
 
 import pytest
-from mcp.types import EmbeddedResource, TextContent
 
 from mcp_atlassian.confluence.attachments import AttachmentsMixin
 
@@ -1187,10 +1186,10 @@ class TestAttachmentsMixin:
 
 
 class TestDownloadAttachmentServerTool:
-    """Tests for the server-level download_attachment tool (EmbeddedResource return)."""
+    """Tests for the server-level download_attachment tool (disk-based, no inline content)."""
 
     @pytest.mark.asyncio
-    async def test_returns_embedded_resource_on_success(self):
+    async def test_saves_to_disk_on_success(self, tmp_path):
         mock_fetcher = MagicMock()
         mock_fetcher._v2_adapter = None
         mock_fetcher.config.url = "https://test.atlassian.net/wiki"
@@ -1214,16 +1213,20 @@ class TestDownloadAttachmentServerTool:
                 download_attachment as server_download_attachment,
             )
 
-            result = await server_download_attachment.fn(
-                ctx=MagicMock(), attachment_id="att123456"
+            raw = await server_download_attachment.fn(
+                ctx=MagicMock(), attachment_id="att123456", target_dir=str(tmp_path)
             )
 
-        assert isinstance(result, EmbeddedResource)
-        assert result.resource.mimeType == "application/pdf"
-        assert result.resource.blob
+        data = json.loads(raw)
+        expected_path = tmp_path / "report.pdf"
+        assert data["success"] is True
+        assert data["mimeType"] == "application/pdf"
+        assert data["path"] == str(expected_path)
+        assert "content" not in data
+        assert expected_path.read_bytes() == b"pdf content"
 
     @pytest.mark.asyncio
-    async def test_returns_text_on_missing_download_url(self):
+    async def test_returns_text_on_missing_download_url(self, tmp_path):
         mock_fetcher = MagicMock()
         mock_fetcher._v2_adapter = None
         mock_fetcher.config.url = "https://test.atlassian.net/wiki"
@@ -1245,17 +1248,16 @@ class TestDownloadAttachmentServerTool:
                 download_attachment as server_download_attachment,
             )
 
-            result = await server_download_attachment.fn(
-                ctx=MagicMock(), attachment_id="att123456"
+            raw = await server_download_attachment.fn(
+                ctx=MagicMock(), attachment_id="att123456", target_dir=str(tmp_path)
             )
 
-        assert isinstance(result, TextContent)
-        data = json.loads(result.text)
+        data = json.loads(raw)
         assert data["success"] is False
         assert "download URL" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_returns_text_on_size_exceeded(self):
+    async def test_returns_text_on_size_exceeded(self, tmp_path):
         mock_fetcher = MagicMock()
         mock_fetcher._v2_adapter = None
         mock_fetcher.config.url = "https://test.atlassian.net/wiki"
@@ -1280,17 +1282,17 @@ class TestDownloadAttachmentServerTool:
                 download_attachment as server_download_attachment,
             )
 
-            result = await server_download_attachment.fn(
-                ctx=MagicMock(), attachment_id="att_huge"
+            raw = await server_download_attachment.fn(
+                ctx=MagicMock(), attachment_id="att_huge", target_dir=str(tmp_path)
             )
 
-        assert isinstance(result, TextContent)
-        data = json.loads(result.text)
+        data = json.loads(raw)
         assert data["success"] is False
         assert "50 MB" in data["error"]
+        assert list(tmp_path.iterdir()) == []
 
     @pytest.mark.asyncio
-    async def test_returns_text_on_exception(self):
+    async def test_returns_text_on_exception(self, tmp_path):
         mock_fetcher = MagicMock()
         mock_fetcher._v2_adapter = None
         mock_fetcher.config.url = "https://test.atlassian.net/wiki"
@@ -1304,21 +1306,60 @@ class TestDownloadAttachmentServerTool:
                 download_attachment as server_download_attachment,
             )
 
-            result = await server_download_attachment.fn(
-                ctx=MagicMock(), attachment_id="att123456"
+            raw = await server_download_attachment.fn(
+                ctx=MagicMock(), attachment_id="att123456", target_dir=str(tmp_path)
             )
 
-        assert isinstance(result, TextContent)
-        data = json.loads(result.text)
+        data = json.loads(raw)
         assert data["success"] is False
         assert "Connection error" in data["error"]
 
+    @pytest.mark.asyncio
+    async def test_target_dir_outside_cwd_not_rejected(self, tmp_path, monkeypatch):
+        """Regression: a target_dir outside the server process's cwd must work."""
+        other_cwd = tmp_path / "server_launch_dir"
+        other_cwd.mkdir()
+        monkeypatch.chdir(other_cwd)
+        target_dir = tmp_path / "elsewhere" / "downloads"
+
+        mock_fetcher = MagicMock()
+        mock_fetcher._v2_adapter = None
+        mock_fetcher.config.url = "https://test.atlassian.net/wiki"
+
+        meta_resp = MagicMock()
+        meta_resp.json.return_value = {
+            "title": "notes.txt",
+            "_links": {"download": "/download/notes.txt"},
+            "extensions": {"mediaType": "text/plain", "fileSize": 7},
+        }
+        meta_resp.raise_for_status.return_value = None
+        mock_fetcher.confluence._session.get.return_value = meta_resp
+        mock_fetcher.fetch_attachment_content.return_value = b"content"
+
+        with patch(
+            "mcp_atlassian.servers.confluence.get_confluence_fetcher",
+            AsyncMock(return_value=mock_fetcher),
+        ):
+            from mcp_atlassian.servers.confluence import (
+                download_attachment as server_download_attachment,
+            )
+
+            raw = await server_download_attachment.fn(
+                ctx=MagicMock(), attachment_id="att123456", target_dir=str(target_dir)
+            )
+
+        data = json.loads(raw)
+        expected_path = target_dir / "notes.txt"
+        assert data["success"] is True
+        assert data["path"] == str(expected_path)
+        assert expected_path.read_bytes() == b"content"
+
 
 class TestDownloadContentAttachmentsServerTool:
-    """Tests for the server-level download_content_attachments tool (EmbeddedResource return)."""
+    """Tests for the server-level download_content_attachments tool (disk-based)."""
 
     @pytest.mark.asyncio
-    async def test_returns_summary_plus_embedded_resources(self):
+    async def test_saves_all_attachments_to_disk(self, tmp_path):
         mock_fetcher = MagicMock()
         mock_fetcher.config.url = "https://test.atlassian.net/wiki"
         mock_fetcher.get_content_attachments.return_value = {
@@ -1343,20 +1384,19 @@ class TestDownloadContentAttachmentsServerTool:
                 download_content_attachments as server_download_content,
             )
 
-            results = await server_download_content.fn(
-                ctx=MagicMock(), content_id="123456"
+            raw = await server_download_content.fn(
+                ctx=MagicMock(), content_id="123456", target_dir=str(tmp_path)
             )
 
-        assert len(results) == 2
-        assert isinstance(results[0], TextContent)
-        summary = json.loads(results[0].text)
+        summary = json.loads(raw)
+        expected_path = tmp_path / "file1.txt"
         assert summary["success"] is True
-        assert summary["downloaded"] == 1
-        assert isinstance(results[1], EmbeddedResource)
-        assert results[1].resource.mimeType == "text/plain"
+        assert len(summary["downloaded"]) == 1
+        assert summary["downloaded"][0]["path"] == str(expected_path)
+        assert expected_path.read_bytes() == b"hello world!"
 
     @pytest.mark.asyncio
-    async def test_returns_text_when_no_attachments(self):
+    async def test_returns_text_when_no_attachments(self, tmp_path):
         mock_fetcher = MagicMock()
         mock_fetcher.get_content_attachments.return_value = {
             "success": True,
@@ -1371,18 +1411,16 @@ class TestDownloadContentAttachmentsServerTool:
                 download_content_attachments as server_download_content,
             )
 
-            results = await server_download_content.fn(
-                ctx=MagicMock(), content_id="123456"
+            raw = await server_download_content.fn(
+                ctx=MagicMock(), content_id="123456", target_dir=str(tmp_path)
             )
 
-        assert len(results) == 1
-        assert isinstance(results[0], TextContent)
-        summary = json.loads(results[0].text)
+        summary = json.loads(raw)
         assert summary["success"] is True
         assert "No attachments" in summary["message"]
 
     @pytest.mark.asyncio
-    async def test_returns_error_text_on_api_failure(self):
+    async def test_returns_error_text_on_api_failure(self, tmp_path):
         mock_fetcher = MagicMock()
         mock_fetcher.get_content_attachments.return_value = {
             "success": False,
@@ -1397,17 +1435,15 @@ class TestDownloadContentAttachmentsServerTool:
                 download_content_attachments as server_download_content,
             )
 
-            results = await server_download_content.fn(
-                ctx=MagicMock(), content_id="123456"
+            raw = await server_download_content.fn(
+                ctx=MagicMock(), content_id="123456", target_dir=str(tmp_path)
             )
 
-        assert len(results) == 1
-        assert isinstance(results[0], TextContent)
-        data = json.loads(results[0].text)
+        data = json.loads(raw)
         assert data["success"] is False
 
     @pytest.mark.asyncio
-    async def test_skips_attachment_over_size_limit(self):
+    async def test_skips_attachment_over_size_limit(self, tmp_path):
         mock_fetcher = MagicMock()
         mock_fetcher.config.url = "https://test.atlassian.net/wiki"
         mock_fetcher.get_content_attachments.return_value = {
@@ -1433,16 +1469,15 @@ class TestDownloadContentAttachmentsServerTool:
                 download_content_attachments as server_download_content,
             )
 
-            results = await server_download_content.fn(
-                ctx=MagicMock(), content_id="123456"
+            raw = await server_download_content.fn(
+                ctx=MagicMock(), content_id="123456", target_dir=str(tmp_path)
             )
 
-        assert len(results) == 1
-        assert isinstance(results[0], TextContent)
-        summary = json.loads(results[0].text)
-        assert summary["downloaded"] == 0
+        summary = json.loads(raw)
+        assert summary["downloaded"] == []
         assert len(summary["failed"]) == 1
         assert "50 MB" in summary["failed"][0]["error"]
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestConfluenceAttachmentPathTraversal:
