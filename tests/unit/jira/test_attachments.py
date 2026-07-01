@@ -1523,8 +1523,10 @@ class TestAttachmentToolsServerLayer:
         assert len(payload["attachments"]) == 2
 
     @pytest.mark.anyio
-    async def test_download_attachment_text_utf8(self, mock_ctx: MagicMock):
-        """Text attachments are returned as decoded UTF-8 content."""
+    async def test_download_attachment_saves_text_to_disk(
+        self, mock_ctx: MagicMock, tmp_path
+    ):
+        """Text attachments are streamed to disk, never embedded inline."""
         from mcp_atlassian.models.jira import JiraAttachment
         from mcp_atlassian.servers.jira import jira_download_attachment
 
@@ -1539,55 +1541,64 @@ class TestAttachmentToolsServerLayer:
         )
         fetcher = MagicMock()
         fetcher.get_attachment_by_id.return_value = attachment
-        fetcher.fetch_attachment_content.return_value = b"hello world"
+        fetcher.download_attachment.return_value = True
 
         with self._patch_fetcher(fetcher):
-            raw = await jira_download_attachment.fn(mock_ctx, attachment_id="10042")
+            raw = await jira_download_attachment.fn(
+                mock_ctx, attachment_id="10042", target_dir=str(tmp_path)
+            )
 
         payload = json.loads(raw)
+        expected_path = str(tmp_path / "notes.txt")
         assert payload["attachment_id"] == "10042"
         assert payload["filename"] == "notes.txt"
         assert payload["mimeType"] == "text/plain"
-        assert payload["encoding"] == "utf-8"
-        assert payload["content"] == "hello world"
-        assert payload["size"] == len(b"hello world")
-        fetcher.fetch_attachment_content.assert_called_once_with(
-            "https://jira.example.com/attachment/10042"
+        assert payload["size"] == 11
+        assert payload["path"] == expected_path
+        assert "content" not in payload
+        assert "encoding" not in payload
+        fetcher.download_attachment.assert_called_once_with(
+            "https://jira.example.com/attachment/10042", expected_path
         )
 
     @pytest.mark.anyio
-    async def test_download_attachment_binary_base64(self, mock_ctx: MagicMock):
-        """Binary attachments are returned base64-encoded."""
-        import base64
-
+    async def test_download_attachment_saves_image_to_disk_not_inline(
+        self, mock_ctx: MagicMock, tmp_path
+    ):
+        """Image attachments must also be saved to disk, never inlined as base64."""
         from mcp_atlassian.models.jira import JiraAttachment
         from mcp_atlassian.servers.jira import jira_download_attachment
 
-        raw_bytes = b"\x89PNG\r\n\x1a\n\x00\x01\x02"
         attachment = JiraAttachment.from_api_response(
             {
                 "id": "10044",
                 "filename": "image.png",
-                "size": len(raw_bytes),
+                "size": 8,
                 "mimeType": "image/png",
                 "content": "https://jira.example.com/attachment/10044",
             }
         )
         fetcher = MagicMock()
         fetcher.get_attachment_by_id.return_value = attachment
-        fetcher.fetch_attachment_content.return_value = raw_bytes
+        fetcher.download_attachment.return_value = True
 
         with self._patch_fetcher(fetcher):
-            raw = await jira_download_attachment.fn(mock_ctx, attachment_id="10044")
+            raw = await jira_download_attachment.fn(
+                mock_ctx, attachment_id="10044", target_dir=str(tmp_path)
+            )
 
         payload = json.loads(raw)
+        expected_path = str(tmp_path / "image.png")
         assert payload["mimeType"] == "image/png"
-        assert payload["encoding"] == "base64"
-        assert payload["content"] == base64.b64encode(raw_bytes).decode("ascii")
-        assert payload["size"] == len(raw_bytes)
+        assert payload["path"] == expected_path
+        assert "content" not in payload
+        assert "encoding" not in payload
+        fetcher.download_attachment.assert_called_once_with(
+            "https://jira.example.com/attachment/10044", expected_path
+        )
 
     @pytest.mark.anyio
-    async def test_download_attachment_empty_url(self, mock_ctx: MagicMock):
+    async def test_download_attachment_empty_url(self, mock_ctx: MagicMock, tmp_path):
         """Raises ValueError when the attachment has no download URL."""
         from mcp_atlassian.models.jira import JiraAttachment
         from mcp_atlassian.servers.jira import jira_download_attachment
@@ -1601,12 +1612,16 @@ class TestAttachmentToolsServerLayer:
 
         with self._patch_fetcher(fetcher):
             with pytest.raises(ValueError, match="has no download URL"):
-                await jira_download_attachment.fn(mock_ctx, attachment_id="10045")
-        fetcher.fetch_attachment_content.assert_not_called()
+                await jira_download_attachment.fn(
+                    mock_ctx, attachment_id="10045", target_dir=str(tmp_path)
+                )
+        fetcher.download_attachment.assert_not_called()
 
     @pytest.mark.anyio
-    async def test_download_attachment_download_failure(self, mock_ctx: MagicMock):
-        """Raises ValueError when content download returns None."""
+    async def test_download_attachment_download_failure(
+        self, mock_ctx: MagicMock, tmp_path
+    ):
+        """Raises ValueError when the disk write fails."""
         from mcp_atlassian.models.jira import JiraAttachment
         from mcp_atlassian.servers.jira import jira_download_attachment
 
@@ -1621,14 +1636,18 @@ class TestAttachmentToolsServerLayer:
         )
         fetcher = MagicMock()
         fetcher.get_attachment_by_id.return_value = attachment
-        fetcher.fetch_attachment_content.return_value = None
+        fetcher.download_attachment.return_value = False
 
         with self._patch_fetcher(fetcher):
-            with pytest.raises(ValueError, match="Failed to download content"):
-                await jira_download_attachment.fn(mock_ctx, attachment_id="10046")
+            with pytest.raises(ValueError, match="Failed to download attachment"):
+                await jira_download_attachment.fn(
+                    mock_ctx, attachment_id="10046", target_dir=str(tmp_path)
+                )
 
     @pytest.mark.anyio
-    async def test_download_attachment_size_limit_exceeded(self, mock_ctx: MagicMock):
+    async def test_download_attachment_size_limit_exceeded(
+        self, mock_ctx: MagicMock, tmp_path
+    ):
         """Raises before downloading when size exceeds the 50 MB limit."""
         from mcp_atlassian.models.jira import JiraAttachment
         from mcp_atlassian.servers.jira import jira_download_attachment
@@ -1647,7 +1666,9 @@ class TestAttachmentToolsServerLayer:
         fetcher.get_attachment_by_id.return_value = attachment
 
         with self._patch_fetcher(fetcher):
-            with pytest.raises(ValueError, match="exceeds the 50 MB inline limit"):
-                await jira_download_attachment.fn(mock_ctx, attachment_id="10047")
-        # The byte payload must never be loaded for oversized attachments.
-        fetcher.fetch_attachment_content.assert_not_called()
+            with pytest.raises(ValueError, match="exceeds the 50 MB size limit"):
+                await jira_download_attachment.fn(
+                    mock_ctx, attachment_id="10047", target_dir=str(tmp_path)
+                )
+        # The bytes must never be fetched for oversized attachments.
+        fetcher.download_attachment.assert_not_called()

@@ -4,6 +4,8 @@ import base64
 import json
 import logging
 import mimetypes
+import os
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
@@ -1116,30 +1118,32 @@ async def jira_download_attachment(
         str,
         Field(description="Jira attachment ID (numeric string, e.g., '10042')"),
     ],
+    target_dir: Annotated[
+        str,
+        Field(description="Local directory to save the attachment into"),
+    ],
 ) -> str:
-    """Download a single Jira attachment by its attachment ID.
+    """Download a single Jira attachment by its attachment ID to local disk.
 
-    Fetches the attachment metadata via the Jira REST API, downloads the
-    raw bytes using the authenticated session, and returns the content as
-    a base64-encoded string so the caller can reconstruct the file without
-    filesystem access on the server.
-
-    Text attachments (``text/plain`` and similar ``text/*`` MIME types)
-    are returned as plain UTF-8 strings instead of base64.
+    Fetches the attachment metadata via the Jira REST API and streams the
+    raw bytes straight to a file under ``target_dir``, named after the
+    attachment's original filename. Content is never embedded inline in
+    the tool response, regardless of MIME type (text, image, or otherwise).
 
     Args:
         ctx: The FastMCP context.
         attachment_id: Numeric Jira attachment ID.
+        target_dir: Local directory to save the attachment into. Created
+            if it does not already exist.
 
     Returns:
         JSON string with ``attachment_id``, ``filename``, ``mimeType``,
-        ``size``, ``encoding`` (``"base64"`` or ``"utf-8"``), and
-        ``content``.
+        ``size``, and ``path`` (the absolute path of the saved file).
 
     Raises:
         ValueError: If the attachment is not found, the ID is invalid, the
             attachment has no download URL, the download fails, or the
-            attachment exceeds the 50 MB inline size limit.
+            attachment exceeds the 50 MB size limit.
     """
     jira = await get_jira_fetcher(ctx)
 
@@ -1151,12 +1155,16 @@ async def jira_download_attachment(
     if attachment.size > ATTACHMENT_MAX_BYTES:
         raise ValueError(
             f"Attachment {attachment_id} is {attachment.size} bytes which "
-            "exceeds the 50 MB inline limit. Retrieve it directly from Jira."
+            "exceeds the 50 MB size limit. Retrieve it directly from Jira."
         )
 
-    data = jira.fetch_attachment_content(attachment.url)
-    if data is None:
-        raise ValueError(f"Failed to download content for attachment {attachment_id}.")
+    safe_filename = Path(attachment.filename).name
+    if not os.path.isabs(target_dir):
+        target_dir = os.path.abspath(target_dir)
+    target_path = Path(target_dir) / safe_filename
+
+    if not jira.download_attachment(attachment.url, str(target_path)):
+        raise ValueError(f"Failed to download attachment {attachment_id} to disk.")
 
     mime_type = (
         attachment.content_type
@@ -1164,20 +1172,12 @@ async def jira_download_attachment(
         or "application/octet-stream"
     )
 
-    if mime_type.startswith("text/"):
-        encoding = "utf-8"
-        content = data.decode("utf-8", errors="replace")
-    else:
-        encoding = "base64"
-        content = base64.b64encode(data).decode("ascii")
-
     result: dict[str, Any] = {
         "attachment_id": attachment_id,
         "filename": attachment.filename,
         "mimeType": mime_type,
-        "size": len(data),
-        "encoding": encoding,
-        "content": content,
+        "size": attachment.size,
+        "path": str(target_path),
     }
     return json.dumps(result, indent=2, ensure_ascii=False)
 
