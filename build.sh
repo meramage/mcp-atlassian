@@ -45,10 +45,11 @@ cp "$ROOT/uv.lock" "$PLUGIN/"
 # - replace dynamic version with the bumped static version
 # - remove uv-dynamic-versioning from build requirements (causes empty wheels)
 PYPROJECT="$PLUGIN/pyproject.toml"
-sed -i 's/^dynamic = \["version"\]/version = "'"$NEW_VERSION"'"/' "$PYPROJECT"
-sed -i 's|requires = \["hatchling", "uv-dynamic-versioning>=.*"\]|requires = ["hatchling"]|' "$PYPROJECT"
-sed -i '/^\[tool\.hatch\.version\]/,/^$/d' "$PYPROJECT"
-sed -i '/^\[tool\.uv-dynamic-versioning\]/,/^$/d' "$PYPROJECT"
+sed -i.bak 's/^dynamic = \["version"\]/version = "'"$NEW_VERSION"'"/' "$PYPROJECT"
+sed -i.bak 's|requires = \["hatchling", "uv-dynamic-versioning>=.*"\]|requires = ["hatchling"]|' "$PYPROJECT"
+sed -i.bak '/^\[tool\.hatch\.version\]/,/^$/d' "$PYPROJECT"
+sed -i.bak '/^\[tool\.uv-dynamic-versioning\]/,/^$/d' "$PYPROJECT"
+rm -f "$PYPROJECT.bak"
 
 echo "Done — plugin ready at $PLUGIN"
 
